@@ -1,0 +1,88 @@
+name: OCCT Android ARM64 derlemesi
+
+on:
+  workflow_dispatch:
+    inputs:
+      occt_ref:
+        description: 'Derlenecek OCCT surumu (git tag/branch)'
+        required: true
+        default: 'V7_8_1'
+      android_api_level:
+        description: 'Android API seviyesi (projenin minSdk degeriyle eslesmeli)'
+        required: true
+        default: '26'
+
+jobs:
+  build-occt-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: OCCT kaynagini indir
+        uses: actions/checkout@v4
+        with:
+          repository: Open-Cascade-SAS/OCCT
+          ref: ${{ github.event.inputs.occt_ref }}
+          path: occt-src
+
+      - name: Android NDK kur
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26c
+
+      - name: CMake ve derleme araclarini kur
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: OCCT'yi Android ARM64 icin yapilandir (sadece gerekli modullerle)
+        working-directory: occt-src
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          mkdir -p build-android
+          cmake -S . -B build-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-${{ github.event.inputs.android_api_level }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_LIBRARY_TYPE=Shared \
+            -DBUILD_MODULE_Draw=OFF \
+            -DBUILD_MODULE_Visualization=OFF \
+            -DUSE_FREETYPE=OFF \
+            -DUSE_TK=OFF \
+            -DUSE_TBB=OFF \
+            -DUSE_VTK=OFF \
+            -DUSE_FREEIMAGE=OFF \
+            -DUSE_RAPIDJSON=OFF \
+            -DUSE_DRACO=OFF \
+            -DUSE_OPENGL=OFF \
+            -DUSE_GLES2=OFF \
+            -DBUILD_DOC_Overview=OFF
+
+      - name: OCCT'yi derle (paralel)
+        working-directory: occt-src
+        run: cmake --build build-android --parallel $(nproc)
+
+      - name: Uretilen .so dosyalarini ve header'lari topla
+        working-directory: occt-src
+        run: |
+          mkdir -p /tmp/occt-out/arm64-v8a
+          mkdir -p /tmp/occt-out/include
+          find build-android -name "*.so" -exec cp {} /tmp/occt-out/arm64-v8a/ \;
+          cmake --install build-android --prefix /tmp/occt-out/install-tmp || true
+          if [ -d /tmp/occt-out/install-tmp/inc ]; then
+            cp -r /tmp/occt-out/install-tmp/inc/* /tmp/occt-out/include/
+          elif [ -d /tmp/occt-out/install-tmp/include ]; then
+            cp -r /tmp/occt-out/install-tmp/include/* /tmp/occt-out/include/
+          fi
+          echo "--- Toplanan .so dosyalari ---"
+          ls -la /tmp/occt-out/arm64-v8a/
+          echo "--- Header sayisi ---"
+          find /tmp/occt-out/include -name "*.hxx" | wc -l
+
+      - name: Artifact olarak yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: occt-android-arm64
+          path: /tmp/occt-out
+          retention-days: 30
