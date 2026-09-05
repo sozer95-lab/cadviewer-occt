@@ -69,16 +69,18 @@ jobs:
           mkdir -p /tmp/occt-out/arm64-v8a
           mkdir -p /tmp/occt-out/include
           find build-android -name "*.so" -exec cp {} /tmp/occt-out/arm64-v8a/ \;
-          cmake --install build-android --prefix /tmp/occt-out/install-tmp || true
-          if [ -d /tmp/occt-out/install-tmp/inc ]; then
-            cp -r /tmp/occt-out/install-tmp/inc/* /tmp/occt-out/include/
-          elif [ -d /tmp/occt-out/install-tmp/include ]; then
-            cp -r /tmp/occt-out/install-tmp/include/* /tmp/occt-out/include/
+          if [ -d build-android/inc ] && [ "$(find build-android/inc -maxdepth 1 -type f | wc -l)" -gt 0 ]; then
+            echo "build-android/inc bulundu, dogrudan kopyalaniyor"
+            cp -r build-android/inc/* /tmp/occt-out/include/
+          else
+            echo "build-android/inc yok/bos - kaynak agacindan header'lar toplaniyor (yedek yontem)"
+            find src -name "*.hxx" -o -name "*.lxx" -o -name "*.gxx" -o -name "*.pxx" | \
+              xargs -I{} cp {} /tmp/occt-out/include/
           fi
-          echo "--- Toplanan .so dosyalari ---"
-          ls -la /tmp/occt-out/arm64-v8a/
-          echo "--- Header sayisi ---"
-          find /tmp/occt-out/include -name "*.hxx" | wc -l
+          echo "--- Toplanan .so dosyalari (sayi) ---"
+          find /tmp/occt-out/arm64-v8a -name "*.so" | wc -l
+          echo "--- Toplanan header sayisi ---"
+          find /tmp/occt-out/include -type f | wc -l
 
       - name: Artifact olarak yukle
         uses: actions/upload-artifact@v4
