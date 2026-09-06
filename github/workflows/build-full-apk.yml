@@ -1,0 +1,136 @@
+name: Tam APK derlemesi (OCCT + DWG + Android)
+
+on:
+  workflow_dispatch:
+    inputs:
+      occt_ref:
+        description: 'Derlenecek OCCT surumu (git tag/branch)'
+        required: true
+        default: 'V7_8_1'
+      android_api_level:
+        description: 'Android API seviyesi (projenin minSdk degeriyle eslesmeli)'
+        required: true
+        default: '26'
+
+jobs:
+  build-full-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Depoyu indir
+        uses: actions/checkout@v4
+
+      - name: Proje kaynagini ac (CadViewer.zip)
+        run: |
+          if [ ! -f CadViewer.zip ]; then
+            echo "HATA: Depo kokunde CadViewer.zip bulunamadi."
+            echo "Guncel proje zip dosyasini 'Add file > Upload files' ile depo KOKUNE yukleyin."
+            exit 1
+          fi
+          unzip -q CadViewer.zip -d .
+          echo "--- Acilan proje icerigi (ilk seviye) ---"
+          ls CadViewer
+
+      - name: JDK 17 kur
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Android NDK kur
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26c
+
+      - name: Rust toolchain kur
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: CMake ve derleme araclarini kur
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      # ---------- 1) OCCT'yi Android ARM64 icin derle ----------
+      - name: OCCT kaynagini indir
+        uses: actions/checkout@v4
+        with:
+          repository: Open-Cascade-SAS/OCCT
+          ref: ${{ github.event.inputs.occt_ref }}
+          path: occt-src
+
+      - name: OCCT'yi yapilandir (sadece gerekli modullerle)
+        working-directory: occt-src
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          mkdir -p build-android
+          cmake -S . -B build-android -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-${{ github.event.inputs.android_api_level }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_LIBRARY_TYPE=Shared \
+            -DBUILD_MODULE_Draw=OFF \
+            -DBUILD_MODULE_Visualization=OFF \
+            -DUSE_FREETYPE=OFF -DUSE_TK=OFF -DUSE_TBB=OFF -DUSE_VTK=OFF \
+            -DUSE_FREEIMAGE=OFF -DUSE_RAPIDJSON=OFF -DUSE_DRACO=OFF \
+            -DUSE_OPENGL=OFF -DUSE_GLES2=OFF -DBUILD_DOC_Overview=OFF
+
+      - name: OCCT'yi derle
+        working-directory: occt-src
+        run: cmake --build build-android --parallel $(nproc)
+
+      - name: OCCT ciktilarini projeye yerlestir
+        working-directory: occt-src
+        run: |
+          DEST=../CadViewer/app/src/main/cpp/third_party/occt
+          mkdir -p "$DEST/arm64-v8a" "$DEST/include"
+          find build-android -name "*.so" -exec cp {} "$DEST/arm64-v8a/" \;
+          if [ -d build-android/inc ] && [ "$(find build-android/inc -maxdepth 1 -type f | wc -l)" -gt 0 ]; then
+            cp -r build-android/inc/* "$DEST/include/"
+          else
+            find src -name "*.hxx" -o -name "*.lxx" -o -name "*.gxx" -o -name "*.pxx" | xargs -I{} cp {} "$DEST/include/"
+          fi
+          echo "OCCT .so sayisi: $(find $DEST/arm64-v8a -name '*.so' | wc -l)"
+
+      # ---------- 2) dwg_bridge'i Android ARM64 icin derle (guncel bulge destegiyle) ----------
+      - name: Rust'a Android linker'ini tanit
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          API: ${{ github.event.inputs.android_api_level }}
+        run: |
+          mkdir -p ~/.cargo
+          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "[target.aarch64-linux-android]" >> ~/.cargo/config.toml
+          echo "linker = \"${TOOLCHAIN}/aarch64-linux-android${API}-clang\"" >> ~/.cargo/config.toml
+          echo "ar = \"${TOOLCHAIN}/llvm-ar\"" >> ~/.cargo/config.toml
+
+      - name: dwg_bridge'i derle
+        working-directory: CadViewer/rust/dwg_bridge
+        run: cargo build --release --target aarch64-linux-android
+
+      - name: dwg_bridge ciktisini projeye yerlestir
+        run: |
+          DEST=CadViewer/app/src/main/cpp/third_party/dwg_bridge/arm64-v8a
+          mkdir -p "$DEST"
+          cp CadViewer/rust/dwg_bridge/target/aarch64-linux-android/release/libdwg_bridge.a "$DEST/"
+
+      # ---------- 3) Android APK derle ----------
+      - name: Gradle icin NDK yolunu ayarla
+        run: echo "ndk.dir=${{ steps.setup-ndk.outputs.ndk-path }}" >> CadViewer/local.properties
+
+      - name: Gradle wrapper'i calistirilabilir yap
+        run: chmod +x CadViewer/gradlew
+
+      - name: APK'yi derle
+        working-directory: CadViewer
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: APK'yi artifact olarak yukle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cadviewer-apk
+          path: CadViewer/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
