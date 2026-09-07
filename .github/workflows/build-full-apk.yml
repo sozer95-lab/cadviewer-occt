@@ -124,6 +124,18 @@ jobs:
       - name: Gradle wrapper'i calistirilabilir yap
         run: chmod +x CadViewer/gradlew
 
+      - name: gradle-wrapper.jar dogrula / gerekirse onar
+        working-directory: CadViewer
+        run: |
+          if unzip -tq gradle/wrapper/gradle-wrapper.jar > /dev/null 2>&1; then
+            echo "gradle-wrapper.jar GECERLI, dokunulmadi."
+          else
+            echo "UYARI: gradle-wrapper.jar GECERSIZ/BOZUK - sistem Gradle'i ile yeniden uretiliyor..."
+            which gradle && gradle --version || (echo "sistemde gradle bulunamadi, SDKMAN ile kuruluyor" && curl -s https://get.sdkman.io | bash && source "$HOME/.sdkman/bin/sdkman-init.sh" && sdk install gradle 8.9)
+            gradle wrapper --gradle-version 8.9 --distribution-type bin
+            unzip -tq gradle/wrapper/gradle-wrapper.jar && echo "onarim basarili: gradle-wrapper.jar simdi gecerli."
+          fi
+
       - name: APK'yi derle
         working-directory: CadViewer
         run: ./gradlew assembleDebug --stacktrace
